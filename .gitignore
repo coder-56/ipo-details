@@ -221,7 +221,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-nse_stock_symbols.csv
 venv/
 env/
 ENV/
