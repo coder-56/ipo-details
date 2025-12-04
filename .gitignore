@@ -214,3 +214,16 @@ yarn-error.log*
 pnpm-debug.log*
 /.next/
 /.turbo/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+nse_stock_symbols.csv
+venv/
+env/
+ENV/
+.env
+.venv

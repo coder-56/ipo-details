@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import type { StockInsight } from "../lib/types";
 
 interface ApiResponse {
@@ -30,24 +30,6 @@ function classifyDelta(value: number | null): string {
   return "delta-neutral";
 }
 
-const STOCK_SUGGESTIONS = [
-  "RELIANCE",
-  "TCS",
-  "HDFCBANK",
-  "ICICIBANK",
-  "INFY",
-  "AXISBANK",
-  "SBIN",
-  "ITC",
-  "LT",
-  "KOTAKBANK",
-  "BHARTIARTL",
-  "ULTRACEMCO",
-  "MARUTI",
-  "SUNPHARMA",
-  "TITAN"
-];
-
 function stripExchangeSuffix(symbol: string): string {
   const upper = symbol.toUpperCase();
   if (upper.endsWith(".NS") || upper.endsWith(".BSE") || upper.endsWith(".BO")) {
@@ -58,11 +40,38 @@ function stripExchangeSuffix(symbol: string): string {
 
 export default function HomePage() {
   const [symbolsInput, setSymbolsInput] = useState("RELIANCE, TCS");
-  const [pickerValue, setPickerValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [results, setResults] = useState<StockInsight[]>([]);
+  
+  // Stock suggestions from CSV
+  const [stockSuggestions, setStockSuggestions] = useState<string[]>([]);
+  
+  // Autocomplete state
+  const [currentWord, setCurrentWord] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Fetch NSE symbols from CSV on mount
+  useEffect(() => {
+    async function fetchSymbols() {
+      try {
+        const res = await fetch("/api/nse-symbols");
+        const json = await res.json();
+        if (json.symbols && Array.isArray(json.symbols)) {
+          setStockSuggestions(json.symbols);
+        }
+      } catch (err) {
+        console.error("Failed to load stock symbols:", err);
+        // Fallback to empty array - autocomplete just won't work
+        setStockSuggestions([]);
+      }
+    }
+    fetchSymbols();
+  }, []);
 
   const activeSymbols = useMemo(
     () =>
@@ -73,22 +82,94 @@ export default function HomePage() {
     [symbolsInput]
   );
 
-  function handlePickerChange(next: string) {
-    const value = next.trim().toUpperCase();
-    setPickerValue(value);
-    if (!value) return;
+  // Extract the current word being typed (last word after last comma)
+  const extractCurrentWord = (text: string): string => {
+    const parts = text.split(",");
+    const lastPart = parts[parts.length - 1]?.trim() || "";
+    return lastPart.toUpperCase();
+  };
 
-    const base = stripExchangeSuffix(value);
-    if (!base) return;
-    const already = activeSymbols.includes(base);
-    if (!already) {
-      const existing = symbolsInput.trim();
-      const updated = existing
-        ? `${existing.replace(/,+\s*$/, "")}, ${base}`
-        : base;
-      setSymbolsInput(updated);
+  // Filter suggestions based on current word
+  const filteredSuggestions = useMemo(() => {
+    if (!currentWord || stockSuggestions.length === 0) return [];
+    return stockSuggestions.filter((s) =>
+      s.toUpperCase().startsWith(currentWord)
+    ).slice(0, 8); // Limit to 8 suggestions
+  }, [currentWord, stockSuggestions]);
+
+  // Handle textarea input change
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const value = e.target.value;
+    setSymbolsInput(value);
+    
+    const word = extractCurrentWord(value);
+    setCurrentWord(word);
+    
+    // Calculate filtered suggestions inline to check if we should show dropdown
+    const filtered = word.length > 0 && stockSuggestions.length > 0
+      ? stockSuggestions.filter((s) =>
+          s.toUpperCase().startsWith(word)
+        ).slice(0, 8)
+      : [];
+    
+    setShowSuggestions(filtered.length > 0);
+    setSelectedIndex(0);
+  }
+
+  // Insert selected suggestion into textarea
+  function insertSuggestion(suggestion: string) {
+    const parts = symbolsInput.split(",");
+    parts[parts.length - 1] = suggestion;
+    const newValue = parts.join(", ") + (parts.length > 1 ? ", " : "");
+    setSymbolsInput(newValue);
+    setCurrentWord("");
+    setShowSuggestions(false);
+    setSelectedIndex(0);
+    
+    // Focus back on textarea
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      const len = newValue.length;
+      textareaRef.current?.setSelectionRange(len, len);
+    }, 0);
+  }
+
+  // Handle keyboard navigation in autocomplete
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!showSuggestions || filteredSuggestions.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((prev) =>
+        prev < filteredSuggestions.length - 1 ? prev + 1 : prev
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter" && filteredSuggestions[selectedIndex]) {
+      e.preventDefault();
+      insertSuggestion(filteredSuggestions[selectedIndex]);
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
     }
   }
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(event.target as Node) &&
+        textareaRef.current &&
+        !textareaRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   async function handleFetch() {
     setApiError(null);
@@ -143,55 +224,50 @@ export default function HomePage() {
 
         <section className="card">
           <div className="input-row">
-            <div className="input-wrapper">
+            <div className="input-wrapper" style={{ position: "relative" }}>
               <div className="input-label-row">
                 <label className="input-label" htmlFor="symbols">
                   Symbols (comma-separated)
                 </label>
                 <span className="input-hint">
-                  Example: RELIANCE, TCS, HDFCBANK, INFY
+                  Start typing for suggestions: RELIANCE, TCS, HDFCBANK, INFY
                 </span>
               </div>
               <textarea
+                ref={textareaRef}
                 id="symbols"
                 className={`symbols-input ${
                   validationError ? "error" : ""
                 }`.trim()}
-                placeholder="RELIANCE, TCS, HDFCBANK, INFY"
+                placeholder="Start typing stock symbols (e.g. RELIANCE, TCS)..."
                 value={symbolsInput}
-                onChange={(e) => setSymbolsInput(e.target.value)}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
                 rows={2}
               />
-            </div>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "flex-start",
-                gap: 6
-              }}
-            >
-              <div style={{ width: "100%" }}>
-                <input
-                  list="stock-suggestions"
-                  value={pickerValue}
-                  onChange={(e) => handlePickerChange(e.target.value)}
-                  placeholder="Search & add NSE stocks (e.g. RELIANCE)"
-                  style={{
-                    width: "100%",
-                    minWidth: 0,
-                    borderRadius: 999,
-                    border: "1px solid rgba(148,163,184,0.8)",
-                    padding: "7px 10px",
-                    fontSize: 12
-                  }}
-                />
-                <datalist id="stock-suggestions">
-                  {STOCK_SUGGESTIONS.map((s) => (
-                    <option key={s} value={s} />
+              {showSuggestions && filteredSuggestions.length > 0 && (
+                <div ref={suggestionsRef} className="autocomplete-dropdown">
+                  {filteredSuggestions.map((suggestion, idx) => (
+                    <div
+                      key={suggestion}
+                      onClick={() => insertSuggestion(suggestion)}
+                      onMouseEnter={() => setSelectedIndex(idx)}
+                      style={{
+                        backgroundColor:
+                          idx === selectedIndex
+                            ? "rgba(59, 130, 246, 0.1)"
+                            : "transparent"
+                      }}
+                    >
+                      <span style={{ fontWeight: 500, color: "#111827" }}>
+                        {suggestion}
+                      </span>
+                    </div>
                   ))}
-                </datalist>
-              </div>
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button
                 type="button"
                 className="primary-button"
